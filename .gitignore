@@ -1,0 +1,5 @@
+# Data bytes live on the bucket (GCS), NOT in git — only the catalog definition is tracked.
+data/**/data/
+*.parquet
+*.tif
+/tmp/

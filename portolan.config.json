@@ -1,0 +1,22 @@
+{
+  "publisher": "Ayuntamiento de Madrid",
+  "alias": "madrid-opendata",
+  "flag": "🇪🇸",
+  "repo": "https://github.com/jatorre/madrid-opendata-portolan",
+  "s3_endpoint": "https://storage.googleapis.com",
+  "bucket_path": "carto-portolan-madrid/madrid-opendata",
+  "public_base": "https://storage.googleapis.com/carto-portolan-madrid/madrid-opendata",
+  "storage": "gcs",
+  "gcs_bucket": "carto-portolan-madrid",
+  "gcs_prefix": "madrid-opendata",
+  "gcs_project": "cartobq",
+  "gcs_location": "europe-southwest1",
+  "rest_prefix": "sdi",
+  "crs": "OGC:CRS84",
+  "data_provider": "Ayuntamiento de Madrid",
+  "data_license": "datos.gob.es Aviso Legal (reuse with attribution) — http://datos.gob.es/datos/?q=aviso-legal",
+  "source_portal": "https://datos.madrid.es",
+  "source_api": "https://datos.madrid.es/api/3/action (CKAN 2.9.11)",
+  "contributions_repo": "https://github.com/jatorre/madrid-opendata-portolan",
+  "contributions_issues_url": "https://github.com/jatorre/madrid-opendata-portolan/issues"
+}
