@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Build the FULL Madrid city catalog from manifest + state ledger.
-- materialized vector layer -> Iceberg v2 (WKB+fp_*) + v3 (native geometry, EPSG:4326) + remote GeoParquet
+- materialized vector layer -> Iceberg v2 (WKB+fp_*) + v3 (native geometry, EPSG:4326) GeoParquet
 - materialized raster layer  -> COG asset (uploaded separately)
 - materialized tabular        -> Iceberg `tab` + remote parquet
 - everything else (maintenance / metadata-only / failed) -> index row, materialized=false, data_status
@@ -22,6 +22,7 @@ BASE = "https://storage.googleapis.com/carto-portolan-madrid/madrid-opendata"
 STAGING = Path("/tmp/od_catalog"); CONV = Path("/tmp/od_conv")
 IRC_PREFIX = "sdi"; DUCKDB = "duckdb"
 GEOM_EXT = ga.wkb().with_crs(ga.OGC_CRS84)
+CRS_PROJJSON = None  # opendata = OGC:CRS84 (GeoParquet default); crs omitted in geo metadata
 PROVIDER = "Ayuntamiento de Madrid"; LICENSE = "datos.gob.es (aviso legal)"
 CITY_BBOX = [-3.8890, 40.3121, -3.5181, 40.6433]
 MAN = {d['id']: d for d in json.load(open('/tmp/od_manifest.json'))}
@@ -131,7 +132,14 @@ def build_v2_v3(coll, src, info):
     for n in v2_cols:
         nf,jf=_ice_field(v2t.schema.field(n),fid[n]); ice.append(nf);fields.append(jf);nm.append({"field-id":fid[n],"names":[n]})
     root=STAGING/"data"/"v2"/coll; (root/"data").mkdir(parents=True,exist_ok=True); pqp=root/"data"/f"{coll}.parquet"
-    v2t=v2t.replace_schema_metadata(None).cast(pa.schema([pa.field(n,v2t.schema.field(n).type,metadata=_fmeta(fid[n])) for n in v2_cols]))
+    # Embed GeoParquet 1.1 `geo` file-metadata so the v2 Iceberg data file IS ALSO a valid GeoParquet
+    file_geo={"version":"1.1.0","primary_column":"geom_wkb","columns":{"geom_wkb":{
+        "encoding":"WKB","geometry_types":[],
+        **({"crs":CRS_PROJJSON} if CRS_PROJJSON else {}),
+        "covering":{"bbox":{"xmin":["fp_xmin"],"ymin":["fp_ymin"],"xmax":["fp_xmax"],"ymax":["fp_ymax"]}}}}}
+    v2schema=pa.schema([pa.field(n,v2t.schema.field(n).type,metadata=_fmeta(fid[n])) for n in v2_cols],
+                       metadata={b"geo":json.dumps(file_geo).encode()})
+    v2t=v2t.replace_schema_metadata(None).cast(v2schema)
     pq.write_table(v2t,pqp,compression="zstd")
     geo={"version":"1.0","primary_column":"geom_wkb","columns":{"geom_wkb":{"encoding":"WKB","crs":CRS,"edges":"planar","bbox_columns":["fp_xmin","fp_ymin","fp_xmax","fp_ymax"]}}}
     lo={fid[c]:dle(pc.min(t[c]).as_py()) for c in ("fp_xmin","fp_ymin","fp_xmax","fp_ymax")}
@@ -230,12 +238,12 @@ def assets_for(layers):
         if L['kind']=='vector':
             a["data"]={"href":f"v2.{c}","type":"application/x-iceberg","roles":["data"],"title":"Iceberg v2 (WKB, EPSG:4326)"}
             a["data_v3"]={"href":f"v3.{c}","type":"application/x-iceberg","roles":["data"],"title":"Iceberg v3 (native geometry, EPSG:4326)"}
-            a["data_parquet"]={"href":f"{BASE}/data/parquet/{c}.parquet","type":"application/vnd.apache.parquet","roles":["data"],"title":"Remote GeoParquet (EPSG:4326)"}
+            a["data_parquet"]={"href":f"{BASE}/data/v2/{c}/data/{c}.parquet","type":"application/vnd.apache.parquet","roles":["data"],"title":"GeoParquet (the v2 Iceberg data file — read_parquet / geopandas; EPSG:4326)"}
         elif L['kind']=='raster':
             a["data"]={"href":f"{BASE}/data/raster/{c}.tif","type":"image/tiff; application=geotiff; profile=cloud-optimized","roles":["data"],"title":"Cloud-Optimized GeoTIFF"}
         elif L['kind']=='tabular':
             a["data"]={"href":f"tab.{c}","type":"application/x-iceberg","roles":["data"],"title":"Iceberg table (non-spatial)"}
-            a["data_parquet"]={"href":f"{BASE}/data/parquet/{c}.parquet","type":"application/vnd.apache.parquet","roles":["data"],"title":"Remote Parquet"}
+            a["data_parquet"]={"href":f"{BASE}/data/tab/{c}/data/{c}.parquet","type":"application/vnd.apache.parquet","roles":["data"],"title":"Parquet (the tab Iceberg data file — read_parquet)"}
     return json.dumps(a)
 
 def write_index(rows):
@@ -275,7 +283,6 @@ def title_for(ds, L, multi):
 def main():
     if STAGING.exists(): shutil.rmtree(STAGING)
     if CONV.exists(): shutil.rmtree(CONV)
-    (STAGING/"data"/"parquet").mkdir(parents=True,exist_ok=True)
     (STAGING/"data"/"raster").mkdir(parents=True,exist_ok=True)
     tables=[]; rows=[]; nmat=0; nmeta=0; errs=[]
     for did in MAN_ORDER:
@@ -299,7 +306,6 @@ def main():
                     if L['kind']=='vector':
                         v2m,v3m=build_v2_v3(coll,L['file'],info)
                         tables+=[("v2",coll,v2m,f"v2/{coll}"),("v3",coll,v3m,f"v3/{coll}")]
-                        shutil.copy(L['file'], STAGING/"data"/"parquet"/f"{coll}.parquet")
                         props=_ice_ext(_props(title,ds['description'],ds['keywords'],theme,True,"available",semantics=sem,rows=L.get('rows')),"v3",v3m)
                         bb=L.get('bbox') or CITY_BBOX
                         rows.append(dict(id=coll,coll=theme,geom=_wkb_box(*bb),bbox=bb,props=props,assets=assets_for([L])))
@@ -310,7 +316,6 @@ def main():
                         rows.append(dict(id=coll,coll=theme,geom=_wkb_box(*bb),bbox=bb,props=props,assets=assets_for([L])))
                     elif L['kind']=='tabular':
                         tm,nr=build_tab(coll,L['file'],info); tables.append(("tab",coll,tm,f"tab/{coll}"))
-                        shutil.copy(L['file'], STAGING/"data"/"parquet"/f"{coll}.parquet")
                         props=_ice_ext(_props(title,ds['description'],ds['keywords'],theme,True,"available",semantics=sem,rows=nr),"tab",tm)
                         props["portolan:geospatial"]=False
                         rows.append(dict(id=coll,coll=theme,geom=None,bbox=None,props=props,assets=assets_for([L])))
@@ -318,8 +323,9 @@ def main():
                 except Exception as e:
                     errs.append(f"{coll}: {type(e).__name__}: {str(e)[:160]}")
                     # fall back to metadata-only row for this layer
-                    props=_props(title_for(ds,L,multi),ds['description'],ds['keywords'],theme,False,"build_error",source=ds.get('res_url'))
-                    rows.append(dict(id=coll,coll=theme,geom=_wkb_box(*CITY_BBOX),bbox=CITY_BBOX,props=props,assets="{}"))
+                    props=_props(title_for(ds,L,multi),ds['description'],ds['keywords'],theme,False,"build_error",
+                                 source=ds.get('res_url'))
+                    rows.append(dict(id=coll,coll=theme or "madrid",geom=_wkb_box(*CITY_BBOX),bbox=CITY_BBOX,props=props,assets="{}"))
         else:
             status=(st or {}).get('status','metadata_only')
             src=ds.get('res_url') or f"https://datos.madrid.es/dataset/{ds.get('name','')}"
