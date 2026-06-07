@@ -1,5 +1,7 @@
 # 🇪🇸 Madrid Open Data — Portolan catalog
 
+🌐 **[Explorar el catálogo (visor web) →](https://storage.googleapis.com/carto-portolan-madrid/madrid-opendata/web/index.html)**
+
 A **Portolan** cloud-native spatial-data catalog of the **City of Madrid open-data portal**
 ([datos.madrid.es](https://datos.madrid.es), CKAN 2.9.11), published as a static **Apache Iceberg REST
 catalog + stac-geoparquet index** on Google Cloud Storage — readable with no server, no credentials.
